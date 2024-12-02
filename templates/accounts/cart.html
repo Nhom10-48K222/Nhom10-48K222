@@ -175,7 +175,7 @@
         const cartId = "{{ cart.uid }}";
         document.getElementById("payment-button1").onclick = function (e) {
             e.preventDefault();
-            window.location.href = `http://127.0.0.1:8000/accounts/success/?card_id=${cartId}`;
+            window.location.href = `{% url 'checkout_page' %}?card_id=${cartId}`;
         };
 
         function updateCartItem(selectElement, cartItemId) {

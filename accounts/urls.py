@@ -43,6 +43,6 @@ urlpatterns = [
     # Delete user account url
     path('delete-account/', delete_account, name='delete_account'),
     path('add-to-cart/<uuid:uid>/', add_to_cart, name='add_to_cart'),
-    path('checkout/', checkout, name='checkout'),
+    path('checkout_page/', checkout_page, name='checkout_page'),
     path('payment-success/<str:card_id>/', payment_success, name='payment_success'),
 ]
