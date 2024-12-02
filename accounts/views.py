@@ -5,7 +5,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseRedirect, HttpResponse
+from django.http import HttpResponseRedirect
 from django.http import JsonResponse
 from django.shortcuts import redirect, render, get_object_or_404
 from django.urls import reverse
@@ -124,7 +124,6 @@ def add_to_cart(request, uid):
 
 @login_required
 def cart(request):
-    cart_obj = None
     payment = None
     user = request.user
 
@@ -132,7 +131,6 @@ def cart(request):
         cart_obj = Cart.objects.get(is_paid=False, user=user)
 
     except Exception as e:
-        print(e)
         messages.warning(request, "Your cart is empty. Please sign in or add a product to cart.")
         return HttpResponseRedirect(request.META.get('HTTP_REFERER'))
 
@@ -179,31 +177,60 @@ def cart(request):
 
 
 @login_required
-def checkout(request):
-    cart_obj = Cart.objects.filter(user=request.user, is_paid=False).first()
+def checkout_page(request):
+    cart_id = request.GET.get('card_id', None)  # Lấy `cart_id` từ query string
+    cart = Cart.objects.filter(uid=cart_id).first()
 
-    if not cart_obj:
-        messages.warning(request, 'Your cart is empty.')
-        return redirect('cart')
+    if not cart:
+        return render(request, 'base/404.html', {'message': 'Cart not found'})
 
-    if request.method == 'POST':
-        razorpay_client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+    if request.method == 'GET':
+        # Tính tổng giá trị giỏ hàng
+        cart_items = cart.cart_items.all()
 
-        # Tạo một đơn hàng trên Razorpay
-        order_amount = int(cart_obj.get_cart_total_price_after_coupon() * 100)  # Chuyển thành paise (1 INR = 100 paise)
-        order = razorpay_client.order.create(dict(amount=order_amount, currency='INR', payment_capture='1'))
+        shipping_address = ShippingAddress.objects.filter(
+            user=request.user, current_address=True).first()
 
-        # Lưu ID đơn hàng vào giỏ hàng
-        cart_obj.razorpay_order_id = order['id']
-        cart_obj.save()
+        form = ShippingAddressForm(instance=shipping_address)
+        return render(request, 'accounts/checkout_page.html', {
+            'cart': cart,
+            'cart_items': cart_items,
+            'form': form
+        })
+    elif request.method == 'POST':
+        form = ShippingAddressForm(request.POST, instance=None)
+        if form.is_valid():
+            shipping_address = ShippingAddress.objects.filter(
+                user=request.user, street=form.cleaned_data['street'],
+                first_name=form.cleaned_data['first_name'],
+                last_name=form.cleaned_data['last_name'],
+                street_number=form.cleaned_data['street_number'],
+                zip_code=form.cleaned_data['zip_code'],
+                city=form.cleaned_data['city'],
+                country=form.cleaned_data['country'],
+                phone=form.cleaned_data['phone'],
+            ).first()
+            if not shipping_address:
+                form.user_id = request.user.id
+                shipping_address = form.save(commit=False)
+                shipping_address.user = request.user
+                shipping_address.current_address = True
+                shipping_address.save()
 
-        return redirect('payment_success', card_id=cart_obj.uid)
+            cart.is_paid = True
+            cart.razorpay_order_id = uuid.uuid4().hex
+            cart.save()
+            # Create the order after payment is confirmed
+            order = create_order(cart, shipping_address)
+            context = {'order_id': order.order_id, 'order': order}
+            return render(request, 'payment_success/payment_success.html', context)
+        else:
+            messages.error(request, 'Address invalid')
+            return redirect(request.META.get('HTTP_REFERER'))
+    else:
+        return render(request, 'base/404.html', {'message': 'Cart not found'})
 
-    context = {
-        'cart': cart_obj,
-        'total_price': cart_obj.get_cart_total_price_after_coupon(),
-    }
-    return render(request, 'accounts/checkout.html', context)
+
 def payment_success(request, card_id):
     cart = get_object_or_404(Cart, uid=card_id)
 
@@ -220,13 +247,15 @@ def payment_success(request, card_id):
     }
     return render(request, 'payment_success/payment_success.html', context)
 
-def create_order(cart):
+
+def create_order(cart, shipping_address=None):
     # Tạo đơn hàng từ giỏ hàng
     order = Order.objects.create(
         user=cart.user,
         order_id=cart.razorpay_order_id,
         payment_status='Paid',
-        shipping_address=cart.user.profile.shipping_address,
+        payment_mode='COD',
+        shipping_address=shipping_address if shipping_address else cart.user.profile.shipping_address,
         order_total_price=cart.get_cart_total(),
         coupon=cart.coupon,
         grand_total=cart.get_cart_total_price_after_coupon()
@@ -243,6 +272,7 @@ def create_order(cart):
         )
 
     return order
+
 
 @require_POST
 @login_required
@@ -284,24 +314,41 @@ def remove_coupon(request, cart_id):
 
 
 # Payment success view
+@login_required
 def success(request):
     card_id = request.GET.get('card_id')
-    # cart = Cart.objects.get(razorpay_order_id = order_id)
     cart = get_object_or_404(Cart, uid=card_id)
+    if request.method == 'POST':
+        form = ShippingAddressForm(request.POST, instance=None)
+        if form.is_valid():
+            shipping = ShippingAddress.objects.create(
+                user=cart.user,
+                first_name=form.first_name,
+                last_name=form.last_name,
+                street=form.street,
+                street_number=form.street_number,
+                zip_code=form.zip_code,
+                city=form.city,
+                country=form.country,
+                phone=form.phone
+            )
+            # Mark the cart as paid
+            cart.is_paid = True
+            cart.razorpay_order_id = uuid.uuid4().hex
+            cart.save()
 
-    # Mark the cart as paid
-    cart.is_paid = True
-    cart.razorpay_order_id = uuid.uuid4().hex
-    cart.save()
+            # Create the order after payment is confirmed
+            order = create_order(cart, shipping)
 
-    # Create the order after payment is confirmed
-    order = create_order(cart)
+            context = {'order_id': order.order_id, 'order': order}
+            return render(request, 'payment_success/payment_success.html', context)
+        else:
+            messages.error(request, 'Address invalid')
+            return redirect(request.META.get('HTTP_REFERER'))
+    else:
+        return render(request, 'base/404.html', {'message': 'Cart not found'})
 
-    context = {'order_id': order.order_id, 'order': order}
-    return render(request, 'payment_success/payment_success.html', context)
 
-
-@login_required
 def profile_view(request, username):
     user_name = get_object_or_404(User, username=username)
     user = request.user
@@ -375,34 +422,6 @@ def order_history(request):
     return render(request, 'accounts/order_history.html', {'orders': orders})
 
 
-# Create an order view
-def create_order(cart):
-    order, created = Order.objects.get_or_create(
-        user=cart.user,
-        order_id=cart.razorpay_order_id,
-        payment_status="Paid",
-        shipping_address=cart.user.profile.shipping_address,
-        payment_mode="COD",
-        order_total_price=cart.get_cart_total(),
-        coupon=cart.coupon,
-        grand_total=cart.get_cart_total_price_after_coupon(),
-    )
-
-    # Create OrderItem instances for each item in the cart
-    cart_items = CartItem.objects.filter(cart=cart)
-    for cart_item in cart_items:
-        OrderItem.objects.get_or_create(
-            order=order,
-            product=cart_item.product,
-            size_variant=cart_item.size_variant,
-            color_variant=cart_item.color_variant,
-            quantity=cart_item.quantity,
-            product_price=cart_item.get_product_price()
-        )
-
-    return order
-
-
 # Order Details view
 @login_required
 def order_details(request, order_id):
@@ -427,6 +446,8 @@ def delete_account(request):
         user.delete()
         messages.success(request, "Your account has been deleted successfully.")
         return redirect('index')
+
+
 def register_page(request):
     if request.method == 'POST':
         username = request.POST.get('username')
@@ -461,4 +482,3 @@ def register_page(request):
         return HttpResponseRedirect(request.path_info)
 
     return render(request, 'accounts/register.html')
-# Thanh toán
