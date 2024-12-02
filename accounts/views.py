@@ -93,17 +93,6 @@ def user_logout(request):
     return redirect('index')
 
 
-def activate_email_account(request, email_token):
-    try:
-        user = Profile.objects.get(email_token=email_token)
-        user.is_email_verified = True
-        user.save()
-        messages.success(request, 'Account verification successful.')
-        return redirect('login')
-    except Exception as e:
-        return HttpResponse('Invalid email token.')
-
-
 @login_required
 def add_to_cart(request, uid):
     try:
@@ -188,6 +177,72 @@ def cart(request):
     context = {'cart': cart_obj, 'payment': payment, 'quantity_range': range(1, 6), }
     return render(request, 'accounts/cart.html', context)
 
+
+@login_required
+def checkout(request):
+    cart_obj = Cart.objects.filter(user=request.user, is_paid=False).first()
+
+    if not cart_obj:
+        messages.warning(request, 'Your cart is empty.')
+        return redirect('cart')
+
+    if request.method == 'POST':
+        razorpay_client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+
+        # Tạo một đơn hàng trên Razorpay
+        order_amount = int(cart_obj.get_cart_total_price_after_coupon() * 100)  # Chuyển thành paise (1 INR = 100 paise)
+        order = razorpay_client.order.create(dict(amount=order_amount, currency='INR', payment_capture='1'))
+
+        # Lưu ID đơn hàng vào giỏ hàng
+        cart_obj.razorpay_order_id = order['id']
+        cart_obj.save()
+
+        return redirect('payment_success', card_id=cart_obj.uid)
+
+    context = {
+        'cart': cart_obj,
+        'total_price': cart_obj.get_cart_total_price_after_coupon(),
+    }
+    return render(request, 'accounts/checkout.html', context)
+def payment_success(request, card_id):
+    cart = get_object_or_404(Cart, uid=card_id)
+
+    # Đánh dấu giỏ hàng đã thanh toán
+    cart.is_paid = True
+    cart.save()
+
+    # Tạo đơn hàng
+    order = create_order(cart)
+
+    context = {
+        'order_id': order.order_id,
+        'order': order,
+    }
+    return render(request, 'payment_success/payment_success.html', context)
+
+def create_order(cart):
+    # Tạo đơn hàng từ giỏ hàng
+    order = Order.objects.create(
+        user=cart.user,
+        order_id=cart.razorpay_order_id,
+        payment_status='Paid',
+        shipping_address=cart.user.profile.shipping_address,
+        order_total_price=cart.get_cart_total(),
+        coupon=cart.coupon,
+        grand_total=cart.get_cart_total_price_after_coupon()
+    )
+
+    # Tạo các sản phẩm trong đơn hàng
+    for cart_item in CartItem.objects.filter(cart=cart):
+        OrderItem.objects.create(
+            order=order,
+            product=cart_item.product,
+            size_variant=cart_item.size_variant,
+            quantity=cart_item.quantity,
+            product_price=cart_item.get_product_price()
+        )
+
+    return order
 
 @require_POST
 @login_required
@@ -372,3 +427,37 @@ def delete_account(request):
         user.delete()
         messages.success(request, "Your account has been deleted successfully.")
         return redirect('index')
+def register_page(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        first_name = request.POST.get('first_name')
+        last_name = request.POST.get('last_name')
+        email = request.POST.get('email')
+        password = request.POST.get('password')
+
+        # Kiểm tra nếu tên người dùng hoặc email đã tồn tại
+        user_obj = User.objects.filter(username=username, email=email)
+        if user_obj.exists():
+            messages.info(request, 'Username or email already exists!')
+            return HttpResponseRedirect(request.path_info)
+
+        # Tạo người dùng mới
+        user_obj = User.objects.create(
+            username=username, first_name=first_name, last_name=last_name, email=email)
+        user_obj.set_password(password)
+        user_obj.save()
+
+        # Đăng nhập ngay sau khi đăng ký
+        user_obj = authenticate(username=username, password=password)
+        if user_obj:
+            login(request, user_obj)
+            messages.success(request, 'Registration successful and logged in!')
+
+            # Chuyển hướng đến trang chủ hoặc trang tiếp theo
+            next_url = request.GET.get('next', 'index')  # Mặc định đến 'index' nếu không có 'next'
+            return redirect(next_url)
+
+        messages.warning(request, 'Error logging in after registration.')
+        return HttpResponseRedirect(request.path_info)
+
+    return render(request, 'accounts/register.html')
