@@ -461,3 +461,4 @@ def register_page(request):
         return HttpResponseRedirect(request.path_info)
 
     return render(request, 'accounts/register.html')
+# Thanh toán

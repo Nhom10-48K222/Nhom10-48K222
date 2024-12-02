@@ -1,7 +1,0 @@
-{% extends 'base_generic.html' %}
-{% block content %}
-  <h2>Payment Successful!</h2>
-  <p>Your order has been successfully placed. Your order ID is {{ order.order_id }}.</p>
-  <p>Thank you for shopping with us!</p>
-  <a href="{% url 'order_history' %}">View your order history</a>
-{% endblock %}

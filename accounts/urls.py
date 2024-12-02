@@ -42,4 +42,7 @@ urlpatterns = [
 
     # Delete user account url
     path('delete-account/', delete_account, name='delete_account'),
+    path('add-to-cart/<uuid:uid>/', add_to_cart, name='add_to_cart'),
+    path('checkout/', checkout, name='checkout'),
+    path('payment-success/<str:card_id>/', payment_success, name='payment_success'),
 ]
