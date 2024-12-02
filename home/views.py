@@ -105,3 +105,7 @@ def terms_and_conditions(request):
 
 def privacy_policy(request):
     return render(request, 'home/privacy_policy.html')
+
+# blog
+def article_detail(request):
+    return render(request, 'home/article_detail.html')
